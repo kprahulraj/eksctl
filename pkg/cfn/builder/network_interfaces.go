@@ -89,19 +89,31 @@ func buildNetworkInterfaces(
 	firstNI := defaultNetworkInterface(securityGroups, 0, 0, connectionTracking)
 	if efaEnabled {
 		var numEFAs = math.MaxFloat64
+		var efaStartCard int
 		for _, it := range instanceTypeInfo {
 			networkInfo := it.NetworkInfo
-			numEFAs = math.Min(float64(aws.ToInt32(networkInfo.MaximumNetworkCards)), numEFAs)
 			if !aws.ToBool(networkInfo.EfaSupported) {
 				return fmt.Errorf("instance type %s does not support EFA", it.InstanceType)
 			}
+			if networkInfo.EfaInfo != nil && networkInfo.EfaInfo.MaximumEfaInterfaces != nil {
+				maxEfa := aws.ToInt32(networkInfo.EfaInfo.MaximumEfaInterfaces)
+				numEFAs = math.Min(float64(maxEfa), numEFAs)
+				// If EFA interfaces < network cards, network card 0 is ENA-only
+				if maxEfa < aws.ToInt32(networkInfo.MaximumNetworkCards) {
+					efaStartCard = 1
+				}
+			} else {
+				numEFAs = math.Min(float64(aws.ToInt32(networkInfo.MaximumNetworkCards)), numEFAs)
+			}
 		}
 
-		firstNI.InterfaceType = gfnt.NewString("efa")
+		if efaStartCard == 0 {
+			firstNI.InterfaceType = gfnt.NewString("efa")
+		}
 		nis := []gfnec2.LaunchTemplate_NetworkInterface{firstNI}
 		// The primary network interface (device index 0) must be assigned to network card index 0
 		// device index 1 for additional cards
-		for i := 1; i < int(numEFAs); i++ {
+		for i := 1; i < int(numEFAs)+efaStartCard; i++ {
 			ni := defaultNetworkInterface(securityGroups, 1, i, connectionTracking)
 			ni.InterfaceType = gfnt.NewString("efa")
 			nis = append(nis, ni)
